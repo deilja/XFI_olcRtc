@@ -6,9 +6,7 @@ from typing import Any
 
 import httpx
 
-from config import (
-    TRAFFIC_LIMIT_GB, XUI_HOST, XUI_INBOUND_ID, XUI_PASSWORD, XUI_USERNAME,
-)
+from config import TRAFFIC_LIMIT_GB, XUI_HOST, XUI_INBOUND_ID, XUI_PASSWORD, XUI_USERNAME
 
 
 async def api_request(method: str, endpoint: str, json_data: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -18,8 +16,7 @@ async def api_request(method: str, endpoint: str, json_data: dict[str, Any] | No
         data = login.json()
         if not data.get("success"):
             raise RuntimeError(f"3X-UI авторизация: {data.get('msg', 'ошибка')}")
-        url = f"{XUI_HOST}/panel/api/{endpoint.lstrip('/')}"
-        response = await client.request(method.upper(), url, json=json_data)
+        response = await client.request(method.upper(), f"{XUI_HOST}/panel/api/{endpoint.lstrip('/')}", json=json_data)
         response.raise_for_status()
         result = response.json()
         if not result.get("success"):
@@ -31,6 +28,15 @@ def _bytes(gb: float) -> int:
     return int(gb * 1024**3)
 
 
+def _client_settings(client_uuid: str, email: str, traffic_limit_bytes: int, expiry: datetime, tg_id: str = "") -> str:
+    expiry_ms = int(expiry.replace(tzinfo=timezone.utc).timestamp() * 1000)
+    return json.dumps({"clients": [{
+        "id": client_uuid, "alterId": 0, "email": email, "limitIp": 0,
+        "totalGB": int(traffic_limit_bytes), "expiryTime": expiry_ms,
+        "enable": True, "tgId": tg_id, "flow": "xtls-rprx-vision",
+    }]})
+
+
 async def check_xui_health() -> bool:
     try:
         await api_request("GET", f"inbounds/get/{XUI_INBOUND_ID}")
@@ -39,31 +45,31 @@ async def check_xui_health() -> bool:
         return False
 
 
+async def create_vless_client_with_identity(client_uuid: str, email: str, traffic_limit_bytes: int, expiry: datetime) -> None:
+    await api_request("POST", "inbounds/addClient", {
+        "id": XUI_INBOUND_ID,
+        "settings": _client_settings(client_uuid, email, traffic_limit_bytes, expiry),
+    })
+
+
 async def create_vless_client(user_id: int, traffic_limit_gb: float | None = None, expiry: datetime | None = None) -> tuple[str, str]:
     client_uuid = str(uuid.uuid4())
     email = f"xfi_{user_id}_{int(time.time())}_{uuid.uuid4().hex[:6]}"
     limit = _bytes(traffic_limit_gb if traffic_limit_gb is not None else TRAFFIC_LIMIT_GB)
-    expiry_ms = 0 if expiry is None else int(expiry.replace(tzinfo=timezone.utc).timestamp() * 1000)
-    settings = {"clients": [{
-        "id": client_uuid, "alterId": 0, "email": email, "limitIp": 0,
-        "totalGB": limit, "expiryTime": expiry_ms, "enable": True,
-        "tgId": str(user_id), "flow": "xtls-rprx-vision",
-    }]}
-    await api_request("POST", "inbounds/addClient", {"id": XUI_INBOUND_ID, "settings": json.dumps(settings)})
+    expiry = expiry or datetime.utcnow()
+    await api_request("POST", "inbounds/addClient", {
+        "id": XUI_INBOUND_ID,
+        "settings": _client_settings(client_uuid, email, limit, expiry, str(user_id)),
+    })
     return client_uuid, email
 
 
 async def update_vless_client(client_uuid: str, email: str, expiry: datetime, traffic_limit_gb: float | None = None) -> None:
     limit = _bytes(traffic_limit_gb if traffic_limit_gb is not None else TRAFFIC_LIMIT_GB)
-    expiry_ms = int(expiry.replace(tzinfo=timezone.utc).timestamp() * 1000)
-    settings = json.dumps({
-        "clients": [{
-            "id": client_uuid, "alterId": 0, "email": email, "limitIp": 0,
-            "totalGB": limit, "expiryTime": expiry_ms, "enable": True,
-            "flow": "xtls-rprx-vision",
-        }]
+    await api_request("POST", f"inbounds/updateClient/{client_uuid}", {
+        "id": XUI_INBOUND_ID,
+        "settings": _client_settings(client_uuid, email, limit, expiry),
     })
-    await api_request("POST", f"inbounds/updateClient/{client_uuid}", {"id": XUI_INBOUND_ID, "settings": settings})
 
 
 async def delete_vless_client(client_uuid: str) -> None:
