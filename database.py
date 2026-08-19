@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Float, Integer, String, select
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -26,9 +26,10 @@ class Tunnel(Base):
     __tablename__ = "tunnels"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
-    container_id: Mapped[str] = mapped_column(String(128), nullable=False)
-    room_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    sub_type: Mapped[str] = mapped_column(String(16), default="vless", nullable=False, index=True)
+    backend_id: Mapped[str] = mapped_column(String(2048), nullable=False)
+    meta_info: Mapped[str] = mapped_column(String(2048), nullable=False)
     port: Mapped[int] = mapped_column(Integer, unique=True, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
@@ -36,6 +37,16 @@ class Tunnel(Base):
     traffic_limit_bytes: Mapped[int] = mapped_column(
         BigInteger, default=int(TRAFFIC_LIMIT_GB * 1024**3), nullable=False
     )
+
+    @property
+    def container_id(self) -> str:
+        """Backward-compatible alias for the backend identifier."""
+        return self.backend_id
+
+    @property
+    def room_url(self) -> str:
+        """Backward-compatible alias for backend metadata."""
+        return self.meta_info
 
 
 async def init_db() -> None:
