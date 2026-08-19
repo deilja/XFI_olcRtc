@@ -116,10 +116,19 @@ async def credit_balance(session: AsyncSession, user_id: int, amount: float, kin
 
 
 async def get_free_port(session: AsyncSession) -> int:
-    # Inactive tunnels keep their historical record, but their port is recycled
-    # by setting it negative when the backend is successfully deactivated.
+    """Return a free port and recycle an old inactive row that owns it.
+
+    Tunnel.port is historically UNIQUE and NOT NULL, so inactive rows cannot
+    simply keep their old positive port. Before reusing a port, move the old
+    inactive record to a private negative value derived from its tunnel id.
+    """
     used = set((await session.scalars(select(Tunnel.port).where(Tunnel.is_active.is_(True)))).all())
     for port in range(PORT_RANGE_START, PORT_RANGE_END + 1):
-        if port not in used:
-            return port
+        if port in used:
+            continue
+        old = await session.scalar(select(Tunnel).where(Tunnel.port == port, Tunnel.is_active.is_(False)))
+        if old is not None:
+            old.port = -old.id
+            await session.flush()
+        return port
     raise RuntimeError("Нет свободного порта")
