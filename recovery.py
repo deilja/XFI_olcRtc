@@ -5,7 +5,7 @@ from sqlalchemy import select
 
 from database import Tunnel, async_session
 from docker_manager import client as docker_client, create_olcrtc_container, stop_container
-from xui_manager import create_vless_client_with_identity, get_inbound_client_stats
+from xui_manager import create_vless_client_with_identity, delete_vless_client, get_inbound_client_stats
 
 
 def now() -> datetime:
@@ -13,15 +13,11 @@ def now() -> datetime:
 
 
 async def reconcile_state() -> dict[str, int]:
-    """Сверяет активные записи БД с backend после перезапуска.
-
-    VLESS: отсутствующий клиент восстанавливается с тем же UUID/email.
-    olcRTC: отсутствующий контейнер пересоздаётся на том же порту.
-    Истёкшие записи закрываются и больше не восстанавливаются.
-    """
+    """Сверяет БД с 3X-UI и Docker и восстанавливает потерянные backend."""
     restored = 0
     deactivated = 0
     failed = 0
+    orphaned = 0
 
     try:
         xui_clients = {x["id"]: x for x in await get_inbound_client_stats()}
@@ -29,14 +25,16 @@ async def reconcile_state() -> dict[str, int]:
         xui_clients = None
 
     async with async_session() as session:
-        tunnels = (await session.scalars(
-            select(Tunnel).where(Tunnel.is_active.is_(True))
-        )).all()
+        tunnels = (await session.scalars(select(Tunnel).where(Tunnel.is_active.is_(True)))).all()
+        active_container_ids = {t.backend_id for t in tunnels if t.sub_type == "olcrtc"}
+        active_vless_emails = {t.meta_info for t in tunnels if t.sub_type == "vless"}
 
         for tunnel in tunnels:
             if tunnel.expires_at <= now():
                 try:
-                    if tunnel.sub_type == "olcrtc":
+                    if tunnel.sub_type == "vless":
+                        await delete_vless_client(tunnel.backend_id)
+                    else:
                         await asyncio.to_thread(stop_container, tunnel.backend_id)
                 except Exception:
                     pass
@@ -67,13 +65,9 @@ async def reconcile_state() -> dict[str, int]:
                     continue
                 except Exception:
                     pass
-
                 try:
                     container_id = await asyncio.to_thread(
-                        create_olcrtc_container,
-                        tunnel.meta_info,
-                        tunnel.port,
-                        tunnel.user_id,
+                        create_olcrtc_container, tunnel.meta_info, tunnel.port, tunnel.user_id
                     )
                     tunnel.backend_id = container_id
                     restored += 1
@@ -82,6 +76,39 @@ async def reconcile_state() -> dict[str, int]:
                     deactivated += 1
                     failed += 1
 
+        # Удаляем только явно принадлежащие XFI_olcRTC осиротевшие Docker-контейнеры.
+        try:
+            containers = await asyncio.to_thread(
+                docker_client.containers.list, all=True, filters={"name": "olcrtc_"}
+            )
+            for container in containers:
+                if container.id in active_container_ids:
+                    continue
+                try:
+                    await asyncio.to_thread(container.remove, force=True)
+                    orphaned += 1
+                except Exception:
+                    failed += 1
+        except Exception:
+            failed += 1
+
+        # Аналогично чистим только клиентов с нашим префиксом xfi_.
+        if xui_clients is not None:
+            for client in xui_clients.values():
+                email = client.get("email") or ""
+                if not email.startswith("xfi_") or email in active_vless_emails:
+                    continue
+                try:
+                    await delete_vless_client(client["id"])
+                    orphaned += 1
+                except Exception:
+                    failed += 1
+
         await session.commit()
 
-    return {"restored": restored, "deactivated": deactivated, "failed": failed}
+    return {
+        "restored": restored,
+        "deactivated": deactivated,
+        "failed": failed,
+        "orphaned": orphaned,
+    }
