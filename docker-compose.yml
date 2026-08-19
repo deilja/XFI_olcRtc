@@ -1,15 +1,9 @@
-services:
-  olcrtc-image:
-    build:
-      context: ./docker/olcrtc
-    image: xfi-olcrtc:latest
-    profiles: [build]
+version: "3.8"
 
-  bot:
-    build:
-      context: .
-      dockerfile: Dockerfile.bot
-    container_name: xfi_olcrtc_bot
+services:
+  olcrtc-bot:
+    build: .
+    container_name: olcrtc_telegram_bot
     restart: unless-stopped
     env_file:
       - .env
@@ -17,5 +11,3 @@ services:
       DB_PATH: /app/data/database.sqlite
     volumes:
       - ./data:/app/data
-      - /var/lib/xfi-olcrtc:/var/lib/xfi-olcrtc
-      - /var/run/docker.sock:/var/run/docker.sock
