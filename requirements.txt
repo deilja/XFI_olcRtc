@@ -1,0 +1,5 @@
+aiogram>=3.0,<4.0
+APScheduler>=3.10,<4.0
+SQLAlchemy>=2.0,<3.0
+aiosqlite>=0.20,<1.0
+docker>=7.0,<8.0
