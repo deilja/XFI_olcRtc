@@ -1,4 +1,3 @@
-import asyncio
 import socket
 
 import docker
@@ -11,17 +10,31 @@ client = docker.from_env()
 
 
 async def get_free_port(session) -> int:
+    """Find an unused host TCP port and recycle an inactive DB reservation."""
     used = set((await session.scalars(select(Tunnel.port).where(Tunnel.is_active.is_(True)))).all())
+
     for port in range(PORT_RANGE_START, PORT_RANGE_END + 1):
         if port in used:
             continue
+
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 sock.bind(("0.0.0.0", port))
             except OSError:
                 continue
+
+        old = await session.scalar(
+            select(Tunnel).where(
+                Tunnel.port == port,
+                Tunnel.is_active.is_(False),
+            )
+        )
+        if old is not None:
+            old.port = -old.id
+            await session.flush()
         return port
+
     raise RuntimeError("Нет свободного TCP-порта в заданном диапазоне")
 
 
