@@ -20,11 +20,11 @@ def create_container(room_url: str, port: int, user_id: int) -> str:
     )
     container = client.containers.run(
         OLCRTC_IMAGE,
-        command=["/opt/olcrtc/olcrtc-linux-amd64", "server.yaml"],
+        command=["server.yaml"],
         name=name,
         detach=True,
         ports={f"{port}/tcp": port, f"{port}/udp": port},
-        volumes={str(config_dir): {"bind": "/opt/olcrtc", "mode": "ro"}},
+        volumes={str(config_path): {"bind": "/opt/olcrtc/server.yaml", "mode": "ro"}},
         labels={"app": "xfi-olcrtc", "user_id": str(user_id), "port": str(port)},
         restart_policy={"Name": "unless-stopped"},
     )
