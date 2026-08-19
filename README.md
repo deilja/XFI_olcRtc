@@ -1,20 +1,19 @@
 # XFI_olcRTC
 
-Telegram-бот для управления персональными туннелями olcRTC.
+Telegram-бот для управления персональными VLESS-подписками через 3X-UI.
 
 ## Возможности
 
-- создание туннеля через Telegram;
-- выделение свободного порта `20000–21000`;
-- баланс пользователя и списание стоимости туннеля;
-- срок действия 30 дней;
-- выдача клиентского URI `olcrtc://...`;
-- удаление собственного туннеля;
-- административная статистика;
-- просмотр активных туннелей;
-- автоматический контроль срока действия и трафика.
-
-Исходная конфигурация проекта задаёт диапазон портов 20000–21000, стоимость 150 и адрес сервера через `SERVER_IP`. fileciteturn3file0L10-L18
+- создание VLESS-клиента через Telegram;
+- автоматическая генерация UUID и email клиента;
+- баланс пользователя и списание стоимости подписки;
+- срок действия подписки 30 дней;
+- лимит трафика на клиента;
+- выдача готового VLESS Reality URI;
+- продление подписки с очисткой трафика;
+- удаление подписки из 3X-UI;
+- административная статистика и список подписок;
+- фоновый контроль срока действия и трафика.
 
 ## Структура
 
@@ -23,76 +22,75 @@ XFI_olcRtc/
 ├── bot.py
 ├── config.py
 ├── database.py
-├── docker_manager.py
+├── xui_manager.py
 ├── requirements.txt
 ├── .env.example
 ├── .gitignore
-├── Dockerfile.bot
+├── Dockerfile
 ├── docker-compose.yml
-├── docker/olcrtc/Dockerfile
 └── .github/workflows/ci.yml
 ```
 
-## Быстрый запуск на Ubuntu
+## Архитектура
+
+```text
+Telegram
+   ↓
+aiogram
+   ↓
+XFI_olcRtc bot
+   ├── SQLite / SQLAlchemy
+   └── 3X-UI API
+          ↓
+        Xray
+          ↓
+     VLESS Reality
+```
+
+## Быстрый запуск
 
 ```bash
 git clone https://github.com/deilja/XFI_olcRtc.git
 cd XFI_olcRtc
 cp .env.example .env
-mkdir -p /var/lib/xfi-olcrtc data
+mkdir -p data
 ```
 
-Соберите собственный образ olcRTC из официального исходного репозитория:
+Заполните `.env`:
+
+- `BOT_TOKEN` — токен Telegram-бота;
+- `ADMIN_ID` — Telegram ID администратора;
+- `SERVER_IP` — публичный IP или DNS сервера Xray;
+- `XUI_HOST` — адрес панели 3X-UI;
+- `XUI_USERNAME` / `XUI_PASSWORD` — учётные данные панели;
+- `XUI_INBOUND_ID` — ID VLESS inbound;
+- `XUI_PUBLIC_KEY` — публичный Reality key;
+- `XUI_SHORT_ID` — Reality short ID;
+- `XUI_SNI` — SNI;
+- `XUI_FINGERPRINT` — fingerprint клиента.
+
+### Docker
 
 ```bash
-docker build -t xfi-olcrtc:latest ./docker/olcrtc
+docker compose build
+docker compose up -d
 ```
 
-Установите Python-зависимости:
+### Запуск без Docker
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-```
-
-Заполните `.env` и запустите:
-
-```bash
 python bot.py
 ```
 
-Для Docker-варианта:
-
-```bash
-docker compose --profile build build olcrtc-image
-docker compose up -d bot
-```
-
-При контейнерном запуске каталог `/var/lib/xfi-olcrtc` должен быть доступен и контейнеру бота, и Docker daemon, поскольку конфигурации отдельных туннелей монтируются в контейнеры olcRTC.
-
-## Переменные окружения
-
-`BOT_TOKEN` — токен Telegram-бота.
-
-`ADMIN_ID` — Telegram ID администратора.
-
-`SERVER_IP` — публичный IP или DNS сервера.
-
-`TUNNEL_COST` — стоимость туннеля.
-
-`OLCRTC_IMAGE` — Docker-образ olcRTC.
-
-`TRAFFIC_LIMIT_GB` — лимит трафика одного туннеля.
-
 ## Безопасность
 
-Секреты хранятся только в `.env`; файл исключён из Git. Не добавляйте токен Telegram или другие ключи в исходный код.
+Файл `.env` не должен попадать в Git. Токен Telegram и пароль 3X-UI хранятся только в переменных окружения.
 
-Создание туннеля выполняется после проверки баланса. Если запуск контейнера завершается ошибкой, транзакция БД откатывается и средства пользователя не списываются.
+В `.env.example` используются только шаблонные значения. Реальные `BOT_TOKEN`, `XUI_PASSWORD`, `XUI_PUBLIC_KEY` и `XUI_SHORT_ID` в репозиторий добавлять нельзя.
 
-## Архитектура
+## API 3X-UI
 
-Telegram → aiogram → SQLite/SQLAlchemy → Docker → olcRTC.
-
-Исходный серверный конфиг olcRTC использует режим `srv`, Jitsi provider, DataChannel transport и отдельный crypto key; это соответствует ранее использовавшемуся серверному скрипту проекта. fileciteturn6file0L41-L65
+Проект использует стандартные операции 3X-UI для авторизации, добавления VLESS-клиента, удаления клиента и сброса его трафика. API 3X-UI документирует `/login`, `/inbounds/addClient`, `/inbounds/:id/delClient/:clientId`, `/inbounds/updateClient/:clientId` и сброс трафика клиента. citeturn0search2turn0search1
