@@ -6,14 +6,15 @@
 
 - создание VLESS-клиента через 3X-UI;
 - создание olcRTC-туннеля через Docker;
-- единая SQLite/SQLAlchemy база пользователей и подписок;
-- баланс пользователя и списание стоимости подписки;
-- срок действия подписки 30 дней;
+- SQLite + SQLAlchemy;
+- баланс пользователя и списание стоимости;
+- подписка с настраиваемым сроком;
 - лимит трафика;
-- выдача VLESS Reality и olcRTC конфигурации;
+- VLESS Reality и olcRTC URI;
 - продление и удаление подписок;
 - административная статистика;
-- фоновый контроль срока, трафика и состояния backend.
+- фоновый контроль срока, трафика и состояния backend;
+- автоматическая установка и запуск через Docker Compose.
 
 ## Архитектура
 
@@ -25,31 +26,52 @@ aiogram
 XFI_olcRtc bot
    ├── SQLite / SQLAlchemy
    ├── VLESS → 3X-UI → Xray
-   └── olcRTC → Docker → olcrtc/srv
+   └── olcRTC → Docker → olcRTC server
 ```
 
 ## Установка одной командой
 
-Требуются Docker и Docker Compose v2.
+Для Ubuntu/Debian скрипт может установить Docker автоматически, если его нет:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/deilja/XFI_olcRtc/main/install.sh | bash
 ```
 
-Скрипт клонирует или обновляет репозиторий, создаёт `.env` из `.env.example`, собирает Docker-образ и запускает `olcrtc-bot`.
+Во время установки скрипт запросит:
 
-После первого запуска заполните `.env`:
+- Telegram BOT_TOKEN;
+- ADMIN_ID;
+- публичный IP/домен сервера;
+- адрес 3X-UI;
+- логин и пароль 3X-UI;
+- ID inbound;
+- Reality public key;
+- Reality short ID.
+
+Если 3X-UI работает на том же сервере, рекомендуется оставить предложенный адрес:
+
+```env
+XUI_HOST=http://host.docker.internal:2053
+```
+
+Docker Compose связывает `host.docker.internal` с хостом через `host-gateway`.
+
+## Настройки
+
+Основные параметры находятся в `.env`:
 
 ```env
 BOT_TOKEN=ваш_telegram_bot_token
 ADMIN_ID=123456789
 SERVER_IP=ваш_публичный_ip_или_домен
+DB_PATH=/app/data/database.sqlite
 PORT_RANGE_START=20000
 PORT_RANGE_END=21000
 TUNNEL_COST=150.0
 TRAFFIC_LIMIT_GB=10
+SUBSCRIPTION_DAYS=30
 
-XUI_HOST=http://127.0.0.1:2053
+XUI_HOST=http://host.docker.internal:2053
 XUI_USERNAME=admin
 XUI_PASSWORD=ваш_пароль
 XUI_INBOUND_ID=1
@@ -58,12 +80,8 @@ XUI_PUBLIC_KEY=ваш_reality_public_key
 XUI_SHORT_ID=ваш_reality_short_id
 XUI_SNI=yahoo.com
 XUI_FINGERPRINT=chrome
-```
 
-Затем примените настройки:
-
-```bash
-docker compose up -d --build
+OLCRTC_IMAGE=olcrtc/srv:latest
 ```
 
 ## Управление
@@ -73,15 +91,32 @@ docker compose ps
 docker compose logs -f olcrtc-bot
 docker compose restart
 docker compose down
+docker compose up -d --build
 ```
 
-## Docker и olcRTC
+## Telegram
 
-Бот получает `/var/run/docker.sock`, поскольку должен создавать, останавливать и удалять olcRTC-контейнеры динамически. Это предоставляет контейнеру бота высокий уровень контроля над Docker-хостом. Используйте такой режим только на доверенном сервере.
+Пользователь:
 
-## Безопасность
+- `/start` — главное меню;
+- `/balance` — баланс;
+- `➕ Создать VLESS` — создать VLESS;
+- `📞 Создать olcRTC` — создать olcRTC;
+- `📋 Мои подписки` — активные подписки;
+- `/cancel` — отменить ввод URL.
 
-`.env` и `database.sqlite` не должны публиковаться в GitHub. Реальные `BOT_TOKEN`, пароль 3X-UI, Reality public key и short ID должны храниться только в `.env`.
+Администратор:
+
+- `/admin` — состояние системы;
+- `/give <user_id> <сумма>` — пополнить баланс.
+
+## Docker и безопасность
+
+Бот использует `/var/run/docker.sock`, потому что должен создавать и удалять olcRTC-контейнеры динамически. Доступ к Docker socket фактически даёт контейнеру высокий уровень контроля над Docker-хостом. Используйте проект только на доверенном сервере и не открывайте Telegram-бота для недоверенных администраторов.
+
+## Безопасность конфигурации
+
+Не публикуйте `.env` и реальные секреты. В репозитории должны оставаться только шаблон `.env.example` и тестовые значения.
 
 ## Структура
 
