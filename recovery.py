@@ -26,8 +26,6 @@ async def reconcile_state() -> dict[str, int]:
 
     async with async_session() as session:
         tunnels = (await session.scalars(select(Tunnel).where(Tunnel.is_active.is_(True)))).all()
-        active_container_ids = {t.backend_id for t in tunnels if t.sub_type == "olcrtc"}
-        active_vless_emails = {t.meta_info for t in tunnels if t.sub_type == "vless"}
 
         for tunnel in tunnels:
             if tunnel.expires_at <= now():
@@ -76,7 +74,14 @@ async def reconcile_state() -> dict[str, int]:
                     deactivated += 1
                     failed += 1
 
-        # Удаляем только явно принадлежащие XFI_olcRTC осиротевшие Docker-контейнеры.
+        await session.flush()
+
+        # Формируем актуальный список после восстановления. Иначе только что
+        # созданный контейнер ошибочно считался бы orphan и удалялся.
+        active_tunnels = (await session.scalars(select(Tunnel).where(Tunnel.is_active.is_(True)))).all()
+        active_container_ids = {t.backend_id for t in active_tunnels if t.sub_type == "olcrtc"}
+        active_vless_ids = {t.backend_id for t in active_tunnels if t.sub_type == "vless"}
+
         try:
             containers = await asyncio.to_thread(
                 docker_client.containers.list, all=True, filters={"name": "olcrtc_"}
@@ -92,14 +97,15 @@ async def reconcile_state() -> dict[str, int]:
         except Exception:
             failed += 1
 
-        # Аналогично чистим только клиентов с нашим префиксом xfi_.
+        # Удаляем только XFI-клиентов, которых нет среди активных туннелей.
         if xui_clients is not None:
-            for client in xui_clients.values():
-                email = client.get("email") or ""
-                if not email.startswith("xfi_") or email in active_vless_emails:
+            for client_data in xui_clients.values():
+                email = client_data.get("email") or ""
+                client_id = client_data.get("id")
+                if not email.startswith("xfi_") or client_id in active_vless_ids:
                     continue
                 try:
-                    await delete_vless_client(client["id"])
+                    await delete_vless_client(client_id)
                     orphaned += 1
                 except Exception:
                     failed += 1
