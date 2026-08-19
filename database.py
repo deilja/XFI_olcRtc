@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, Integer, String, select
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, Integer, String, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -32,9 +32,9 @@ class Tunnel(Base):
     port: Mapped[int] = mapped_column(Integer, unique=True, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    traffic_used_bytes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    traffic_used_bytes: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
     traffic_limit_bytes: Mapped[int] = mapped_column(
-        Integer, default=int(TRAFFIC_LIMIT_GB * 1024**3), nullable=False
+        BigInteger, default=int(TRAFFIC_LIMIT_GB * 1024**3), nullable=False
     )
 
 
