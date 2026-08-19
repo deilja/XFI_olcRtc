@@ -1,35 +1,19 @@
 # XFI_olcRTC
 
-Telegram-бот для управления персональными VLESS-подписками через 3X-UI.
+Универсальный Telegram-бот для управления VLESS через 3X-UI и olcRTC-туннелями через Docker.
 
 ## Возможности
 
-- создание VLESS-клиента через Telegram;
-- автоматическая генерация UUID и email клиента;
+- создание VLESS-клиента через 3X-UI;
+- создание olcRTC-туннеля через Docker;
+- единая SQLite/SQLAlchemy база пользователей и подписок;
 - баланс пользователя и списание стоимости подписки;
 - срок действия подписки 30 дней;
-- лимит трафика на клиента;
-- выдача готового VLESS Reality URI;
-- продление подписки с очисткой трафика;
-- удаление подписки из 3X-UI;
-- административная статистика и список подписок;
-- фоновый контроль срока действия и трафика.
-
-## Структура
-
-```text
-XFI_olcRtc/
-├── bot.py
-├── config.py
-├── database.py
-├── xui_manager.py
-├── requirements.txt
-├── .env.example
-├── .gitignore
-├── Dockerfile
-├── docker-compose.yml
-└── .github/workflows/ci.yml
-```
+- лимит трафика;
+- выдача VLESS Reality и olcRTC конфигурации;
+- продление и удаление подписок;
+- административная статистика;
+- фоновый контроль срока, трафика и состояния backend.
 
 ## Архитектура
 
@@ -40,57 +24,79 @@ aiogram
    ↓
 XFI_olcRtc bot
    ├── SQLite / SQLAlchemy
-   └── 3X-UI API
-          ↓
-        Xray
-          ↓
-     VLESS Reality
+   ├── VLESS → 3X-UI → Xray
+   └── olcRTC → Docker → olcrtc/srv
 ```
 
-## Быстрый запуск
+## Установка одной командой
+
+Требуются Docker и Docker Compose v2.
 
 ```bash
-git clone https://github.com/deilja/XFI_olcRtc.git
-cd XFI_olcRtc
-cp .env.example .env
-mkdir -p data
+curl -fsSL https://raw.githubusercontent.com/deilja/XFI_olcRtc/main/install.sh | bash
 ```
 
-Заполните `.env`:
+Скрипт клонирует или обновляет репозиторий, создаёт `.env` из `.env.example`, собирает Docker-образ и запускает `olcrtc-bot`.
 
-- `BOT_TOKEN` — токен Telegram-бота;
-- `ADMIN_ID` — Telegram ID администратора;
-- `SERVER_IP` — публичный IP или DNS сервера Xray;
-- `XUI_HOST` — адрес панели 3X-UI;
-- `XUI_USERNAME` / `XUI_PASSWORD` — учётные данные панели;
-- `XUI_INBOUND_ID` — ID VLESS inbound;
-- `XUI_PUBLIC_KEY` — публичный Reality key;
-- `XUI_SHORT_ID` — Reality short ID;
-- `XUI_SNI` — SNI;
-- `XUI_FINGERPRINT` — fingerprint клиента.
+После первого запуска заполните `.env`:
 
-### Docker
+```env
+BOT_TOKEN=ваш_telegram_bot_token
+ADMIN_ID=123456789
+SERVER_IP=ваш_публичный_ip_или_домен
+PORT_RANGE_START=20000
+PORT_RANGE_END=21000
+TUNNEL_COST=150.0
+TRAFFIC_LIMIT_GB=10
+
+XUI_HOST=http://127.0.0.1:2053
+XUI_USERNAME=admin
+XUI_PASSWORD=ваш_пароль
+XUI_INBOUND_ID=1
+XUI_SERVER_PORT=443
+XUI_PUBLIC_KEY=ваш_reality_public_key
+XUI_SHORT_ID=ваш_reality_short_id
+XUI_SNI=yahoo.com
+XUI_FINGERPRINT=chrome
+```
+
+Затем примените настройки:
 
 ```bash
-docker compose build
-docker compose up -d
+docker compose up -d --build
 ```
 
-### Запуск без Docker
+## Управление
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python bot.py
+docker compose ps
+docker compose logs -f olcrtc-bot
+docker compose restart
+docker compose down
 ```
+
+## Docker и olcRTC
+
+Бот получает `/var/run/docker.sock`, поскольку должен создавать, останавливать и удалять olcRTC-контейнеры динамически. Это предоставляет контейнеру бота высокий уровень контроля над Docker-хостом. Используйте такой режим только на доверенном сервере.
 
 ## Безопасность
 
-Файл `.env` не должен попадать в Git. Токен Telegram и пароль 3X-UI хранятся только в переменных окружения.
+`.env` и `database.sqlite` не должны публиковаться в GitHub. Реальные `BOT_TOKEN`, пароль 3X-UI, Reality public key и short ID должны храниться только в `.env`.
 
-В `.env.example` используются только шаблонные значения. Реальные `BOT_TOKEN`, `XUI_PASSWORD`, `XUI_PUBLIC_KEY` и `XUI_SHORT_ID` в репозиторий добавлять нельзя.
+## Структура
 
-## API 3X-UI
-
-Проект использует стандартные операции 3X-UI для авторизации, добавления VLESS-клиента, удаления клиента и сброса его трафика. API 3X-UI документирует `/login`, `/inbounds/addClient`, `/inbounds/:id/delClient/:clientId`, `/inbounds/updateClient/:clientId` и сброс трафика клиента. citeturn0search2turn0search1
+```text
+XFI_olcRtc/
+├── bot.py
+├── config.py
+├── database.py
+├── xui_manager.py
+├── docker_manager.py
+├── requirements.txt
+├── .env.example
+├── .gitignore
+├── Dockerfile
+├── docker-compose.yml
+├── install.sh
+└── .github/workflows/ci.yml
+```
