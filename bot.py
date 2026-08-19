@@ -16,13 +16,14 @@ from config import (
 )
 from database import (
     BalanceTransaction, Tunnel, User, async_session, charge_balance,
-    credit_balance, get_free_port, get_or_create_user, init_db,
+    credit_balance, get_or_create_user, init_db,
 )
 from docker_manager import (
     client as docker_client, container_traffic, create_olcrtc_container,
     docker_health, stop_container,
 )
 from docker_manager import get_free_port as docker_free_port
+from recovery import reconcile_state
 from xui_manager import (
     check_xui_health, create_vless_client, delete_vless_client,
     get_inbound_client_stats, reset_client_traffic, update_vless_client,
@@ -124,13 +125,12 @@ async def create_vless(message: types.Message):
                 if user.balance < TUNNEL_COST:
                     await message.answer(f"Недостаточно средств: нужно {TUNNEL_COST:.2f} ₽, доступно {user.balance:.2f} ₽")
                     return
-                port = await get_free_port(session)
                 expiry = now() + timedelta(days=SUBSCRIPTION_DAYS)
                 client_uuid, email = await create_vless_client(user_id, TRAFFIC_LIMIT_GB, expiry)
                 await charge_balance(session, user_id, TUNNEL_COST, "vless_create", f"VLESS {email}")
                 session.add(Tunnel(
                     user_id=user_id, sub_type="vless", backend_id=client_uuid,
-                    meta_info=email, port=port, is_active=True, expires_at=expiry,
+                    meta_info=email, port=0, is_active=True, expires_at=expiry,
                     traffic_limit_bytes=int(TRAFFIC_LIMIT_GB * 1024**3), traffic_used_bytes=0,
                 ))
                 await session.commit()
@@ -314,13 +314,27 @@ async def monitoring():
 
 async def main():
     await init_db()
+    try:
+        recovery = await reconcile_state()
+        print(
+            "[Recovery] restored=%s deactivated=%s failed=%s",
+            recovery["restored"], recovery["deactivated"], recovery["failed"],
+        )
+        if recovery["failed"]:
+            print("[Recovery] Часть туннелей не удалось восстановить; они будут повторно проверены мониторингом.")
+    except Exception as exc:
+        print(f"[Recovery] Ошибка синхронизации backend: {type(exc).__name__}: {exc}")
+
     scheduler = AsyncIOScheduler()
     scheduler.add_job(monitoring, "interval", minutes=5, max_instances=1, coalesce=True)
+    scheduler.add_job(reconcile_state, "interval", minutes=5, max_instances=1, coalesce=True)
     scheduler.start()
-    try: await dp.start_polling(bot)
+    try:
+        await dp.start_polling(bot)
     finally:
         scheduler.shutdown(wait=False)
         await bot.session.close()
 
 
-if __name__ == "__main__": asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
