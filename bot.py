@@ -18,10 +18,7 @@ from database import (
     BalanceTransaction, Tunnel, User, async_session, charge_balance,
     credit_balance, get_free_port, get_or_create_user, init_db,
 )
-from docker_manager import (
-    client as docker_client, container_traffic, create_olcrtc_container,
-    docker_health, stop_container,
-)
+from docker_manager import client as docker_client, container_traffic, create_olcrtc_container, docker_health, stop_container
 from docker_manager import get_free_port as docker_free_port
 from recovery import reconcile_state
 from xui_manager import (
@@ -109,7 +106,8 @@ async def give(message: types.Message):
         return
     async with user_lock(uid):
         async with async_session() as session:
-            new_balance = await credit_balance(session, uid, amount, "admin_credit", f"Админ {ADMIN_ID}")
+            operation_key = f"admin_credit:{uid}:{amount:.2f}:{int(datetime.utcnow().timestamp())}"
+            new_balance = await credit_balance(session, uid, amount, "admin_credit", f"Админ {ADMIN_ID}", operation_key)
             await session.commit()
     await message.answer(f"Баланс {uid}: {new_balance:.2f} ₽")
 
@@ -128,10 +126,12 @@ async def create_vless(message: types.Message):
                 port = await get_free_port(session)
                 expiry = now() + timedelta(days=SUBSCRIPTION_DAYS)
                 client_uuid, email = await create_vless_client(user_id, TRAFFIC_LIMIT_GB, expiry)
-                await charge_balance(session, user_id, TUNNEL_COST, "vless_create", f"VLESS {email}")
+                operation_key = f"vless_create:{client_uuid}"
+                await charge_balance(session, user_id, TUNNEL_COST, "vless_create", f"VLESS {email}", operation_key)
                 session.add(Tunnel(
                     user_id=user_id, sub_type="vless", backend_id=client_uuid,
-                    meta_info=email, port=port, is_active=True, expires_at=expiry,
+                    meta_info=email, port=port, is_active=True, provisioning=False,
+                    operation_key=operation_key, expires_at=expiry,
                     traffic_limit_bytes=int(TRAFFIC_LIMIT_GB * 1024**3), traffic_used_bytes=0,
                 ))
                 await session.commit()
@@ -166,14 +166,17 @@ async def create_olcrtc(message: types.Message, state: FSMContext):
                 user = await get_or_create_user(session, user_id)
                 if user.balance < TUNNEL_COST:
                     await message.answer(f"Недостаточно средств: нужно {TUNNEL_COST:.2f} ₽")
-                    await state.clear(); return
+                    await state.clear()
+                    return
                 port = await docker_free_port(session)
                 container_id = await asyncio.to_thread(create_olcrtc_container, room_url, port, user_id)
                 expiry = now() + timedelta(days=SUBSCRIPTION_DAYS)
-                await charge_balance(session, user_id, TUNNEL_COST, "olcrtc_create", f"olcRTC {port}")
+                operation_key = f"olcrtc_create:{container_id}"
+                await charge_balance(session, user_id, TUNNEL_COST, "olcrtc_create", f"olcRTC {port}", operation_key)
                 session.add(Tunnel(
                     user_id=user_id, sub_type="olcrtc", backend_id=container_id,
-                    meta_info=room_url, port=port, is_active=True, expires_at=expiry,
+                    meta_info=room_url, port=port, is_active=True, provisioning=False,
+                    operation_key=operation_key, expires_at=expiry,
                     traffic_limit_bytes=int(TRAFFIC_LIMIT_GB * 1024**3), traffic_used_bytes=0,
                 ))
                 await session.commit()
@@ -182,7 +185,8 @@ async def create_olcrtc(message: types.Message, state: FSMContext):
                 if container_id:
                     await asyncio.to_thread(stop_container, container_id)
                 await message.answer(f"Ошибка запуска olcRTC: {type(exc).__name__}. Средства не списаны.")
-                await state.clear(); return
+                await state.clear()
+                return
     await state.clear()
     await message.answer(f"olcRTC создан.\nПорт: {port}\nДо: {expiry:%Y-%m-%d %H:%M} UTC\n\nolcrtc://{SERVER_IP}:{port}?room={quote(room_url, safe='')}")
 
@@ -190,9 +194,14 @@ async def create_olcrtc(message: types.Message, state: FSMContext):
 @dp.message(F.text == "📋 Мои подписки")
 async def subscriptions(message: types.Message):
     async with async_session() as session:
-        tunnels = (await session.scalars(select(Tunnel).where(Tunnel.user_id == message.from_user.id, Tunnel.is_active.is_(True)))).all()
+        tunnels = (await session.scalars(select(Tunnel).where(
+            Tunnel.user_id == message.from_user.id,
+            Tunnel.is_active.is_(True),
+            Tunnel.provisioning.is_(False),
+        ))).all()
     if not tunnels:
-        await message.answer("Активных подписок нет."); return
+        await message.answer("Активных подписок нет.")
+        return
     for t in tunnels:
         limit = t.traffic_limit_bytes / 1024**3
         used = t.traffic_used_bytes / 1024**3
@@ -212,15 +221,20 @@ async def delete_subscription(callback: types.CallbackQuery):
         async with async_session() as session:
             t = await session.scalar(select(Tunnel).where(Tunnel.id == tid, Tunnel.user_id == callback.from_user.id, Tunnel.is_active.is_(True)))
             if not t:
-                await callback.answer("Подписка не найдена", show_alert=True); return
+                await callback.answer("Подписка не найдена", show_alert=True)
+                return
             try:
-                if t.sub_type == "vless": await delete_vless_client(t.backend_id)
-                else: await asyncio.to_thread(stop_container, t.backend_id)
+                if t.sub_type == "vless":
+                    await delete_vless_client(t.backend_id)
+                else:
+                    await asyncio.to_thread(stop_container, t.backend_id)
             except Exception:
-                await callback.answer("Backend не удалось удалить", show_alert=True); return
+                await callback.answer("Backend не удалось удалить", show_alert=True)
+                return
             t.is_active = False
             await session.commit()
-    await callback.message.edit_text("Подписка удалена."); await callback.answer()
+    await callback.message.edit_text("Подписка удалена.")
+    await callback.answer()
 
 
 @dp.callback_query(F.data.startswith("renew:"))
@@ -231,30 +245,35 @@ async def renew(callback: types.CallbackQuery):
             user = await session.scalar(select(User).where(User.id == callback.from_user.id))
             t = await session.scalar(select(Tunnel).where(Tunnel.id == tid, Tunnel.user_id == callback.from_user.id, Tunnel.is_active.is_(True)))
             if not t or not user:
-                await callback.answer("Подписка не найдена", show_alert=True); return
+                await callback.answer("Подписка не найдена", show_alert=True)
+                return
             if user.balance < TUNNEL_COST:
-                await callback.answer(f"Нужно {TUNNEL_COST:.2f} ₽", show_alert=True); return
+                await callback.answer(f"Нужно {TUNNEL_COST:.2f} ₽", show_alert=True)
+                return
             new_expiry = max(t.expires_at, now()) + timedelta(days=SUBSCRIPTION_DAYS)
+            operation_key = f"renew:{t.id}:{new_expiry.isoformat()}"
             try:
+                await charge_balance(session, callback.from_user.id, TUNNEL_COST, "subscription_renew", f"Tunnel {t.id}", operation_key)
                 if t.sub_type == "vless":
                     await reset_client_traffic(t.meta_info)
                     await update_vless_client(t.backend_id, t.meta_info, new_expiry, TRAFFIC_LIMIT_GB)
                 else:
                     await asyncio.to_thread(docker_client.containers.get, t.backend_id)
-                await charge_balance(session, callback.from_user.id, TUNNEL_COST, "subscription_renew", f"Tunnel {t.id}")
                 t.expires_at = new_expiry
                 t.traffic_used_bytes = 0
                 await session.commit()
             except Exception as exc:
                 await session.rollback()
-                await callback.answer(f"Продление не выполнено: {type(exc).__name__}", show_alert=True); return
+                await callback.answer(f"Продление не выполнено: {type(exc).__name__}", show_alert=True)
+                return
     await callback.message.edit_reply_markup(reply_markup=None)
     await callback.answer("Продлено на 30 дней", show_alert=True)
 
 
 @dp.message(Command("admin"))
 async def admin(message: types.Message):
-    if message.from_user.id != ADMIN_ID: return
+    if message.from_user.id != ADMIN_ID:
+        return
     async with async_session() as session:
         users = await session.scalar(select(func.count(User.id)))
         vless = await session.scalar(select(func.count(Tunnel.id)).where(Tunnel.is_active.is_(True), Tunnel.sub_type == "vless"))
@@ -262,18 +281,22 @@ async def admin(message: types.Message):
         revenue = await session.scalar(select(func.coalesce(func.sum(-BalanceTransaction.amount), 0)).where(BalanceTransaction.amount < 0))
         tx_count = await session.scalar(select(func.count(BalanceTransaction.id)))
     xui = await check_xui_health()
-    try: _, dc = await asyncio.to_thread(docker_health)
-    except Exception: dc = -1
-    await message.answer(f"👑 XFI_olcRTC\n\nПользователей: {users}\nVLESS: {vless}\nolcRTC: {rtc}\nОпераций баланса: {tx_count}\nСписано всего: {float(revenue or 0):.2f} ₽\n3X-UI: {'🟢' if xui else '🔴'}\nDocker: {'🟢' if dc >= 0 else '🔴'} ({max(dc,0)})\nПорты: {PORT_RANGE_START}-{PORT_RANGE_END}")
+    try:
+        _, dc = await asyncio.to_thread(docker_health)
+    except Exception:
+        dc = -1
+    await message.answer(f"👑 XFI_olcRTC\n\nПользователей: {users}\nVLESS: {vless}\nolcRTC: {rtc}\nОпераций баланса: {tx_count}\nСписано всего: {float(revenue or 0):.2f} ₽\n3X-UI: {'🟢' if xui else '🔴'}\nDocker: {'🟢' if dc >= 0 else '🔴'} ({max(dc, 0)})\nПорты: {PORT_RANGE_START}-{PORT_RANGE_END}")
 
 
 @dp.message(Command("transactions"))
 async def transactions(message: types.Message):
-    if message.from_user.id != ADMIN_ID: return
+    if message.from_user.id != ADMIN_ID:
+        return
     async with async_session() as session:
         rows = (await session.scalars(select(BalanceTransaction).order_by(BalanceTransaction.id.desc()).limit(20))).all()
     if not rows:
-        await message.answer("Операций нет."); return
+        await message.answer("Операций нет.")
+        return
     text = "📒 Последние операции:\n\n" + "\n".join(
         f"#{r.id} user={r.user_id} {'+' if r.amount >= 0 else ''}{r.amount:.2f} ₽ | {r.kind} | {r.created_at:%Y-%m-%d %H:%M}"
         for r in rows
@@ -282,35 +305,51 @@ async def transactions(message: types.Message):
 
 
 async def monitoring():
-    try: xui_clients = {x["id"]: x for x in await get_inbound_client_stats()}
-    except Exception: xui_clients = None
+    try:
+        xui_clients = {x["id"]: x for x in await get_inbound_client_stats()}
+    except Exception:
+        xui_clients = None
     async with async_session() as session:
-        tunnels = (await session.scalars(select(Tunnel).where(Tunnel.is_active.is_(True)))).all()
+        tunnels = (await session.scalars(select(Tunnel).where(Tunnel.is_active.is_(True), Tunnel.provisioning.is_(False)))).all()
         changed = False
         for t in tunnels:
-            close = now() >= t.expires_at; reason = "истёк срок"
+            close = now() >= t.expires_at
+            reason = "истёк срок"
             if t.sub_type == "vless":
-                if xui_clients is None: continue
+                if xui_clients is None:
+                    continue
                 c = xui_clients.get(t.backend_id)
-                if not c: close, reason = True, "клиент отсутствует в 3X-UI"
+                if not c:
+                    close, reason = True, "клиент отсутствует в 3X-UI"
                 else:
                     t.traffic_used_bytes = int(c.get("up", 0)) + int(c.get("down", 0))
-                    if t.traffic_used_bytes >= t.traffic_limit_bytes: close, reason = True, "лимит трафика"
-                    elif not c.get("enable", True): close, reason = True, "клиент отключён"
+                    if t.traffic_used_bytes >= t.traffic_limit_bytes:
+                        close, reason = True, "лимит трафика"
+                    elif not c.get("enable", True):
+                        close, reason = True, "клиент отключён"
             else:
                 try:
                     t.traffic_used_bytes = await asyncio.to_thread(container_traffic, t.backend_id)
-                    if t.traffic_used_bytes >= t.traffic_limit_bytes: close, reason = True, "лимит трафика"
-                except Exception: close, reason = True, "контейнер отсутствует"
+                    if t.traffic_used_bytes >= t.traffic_limit_bytes:
+                        close, reason = True, "лимит трафика"
+                except Exception:
+                    close, reason = True, "контейнер отсутствует"
             if close:
                 try:
-                    if t.sub_type == "vless": await delete_vless_client(t.backend_id)
-                    else: await asyncio.to_thread(stop_container, t.backend_id)
-                except Exception: pass
-                t.is_active = False; changed = True
-                try: await bot.send_message(t.user_id, f"Подписка {t.meta_info} остановлена: {reason}.")
-                except Exception: pass
-        if changed: await session.commit()
+                    if t.sub_type == "vless":
+                        await delete_vless_client(t.backend_id)
+                    else:
+                        await asyncio.to_thread(stop_container, t.backend_id)
+                except Exception:
+                    pass
+                t.is_active = False
+                changed = True
+                try:
+                    await bot.send_message(t.user_id, f"Подписка {t.meta_info} остановлена: {reason}.")
+                except Exception:
+                    pass
+        if changed:
+            await session.commit()
 
 
 async def main():
@@ -318,8 +357,6 @@ async def main():
     try:
         recovery = await reconcile_state()
         print(f"[Recovery] restored={recovery['restored']} deactivated={recovery['deactivated']} failed={recovery['failed']}")
-        if recovery["failed"]:
-            print("[Recovery] Часть backend не восстановлена; состояние будет проверено повторно.")
     except Exception as exc:
         print(f"[Recovery] Ошибка синхронизации backend: {type(exc).__name__}: {exc}")
 
