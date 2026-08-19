@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, select
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -18,6 +18,17 @@ class User(Base):
     __tablename__ = "users"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     balance: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+
+
+class BalanceTransaction(Base):
+    __tablename__ = "balance_transactions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    amount: Mapped[float] = mapped_column(Float, nullable=False)
+    balance_after: Mapped[float] = mapped_column(Float, nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    description: Mapped[str] = mapped_column(String(512), default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
 
 
 class Tunnel(Base):
@@ -54,6 +65,38 @@ async def get_or_create_user(session: AsyncSession, user_id: int) -> User:
         session.add(user)
         await session.flush()
     return user
+
+
+async def charge_balance(session: AsyncSession, user_id: int, amount: float, kind: str, description: str) -> float:
+    if amount <= 0:
+        raise ValueError("Сумма списания должна быть положительной")
+    result = await session.execute(
+        update(User)
+        .where(User.id == user_id, User.balance >= amount)
+        .values(balance=User.balance - amount)
+    )
+    if result.rowcount != 1:
+        raise RuntimeError("Недостаточно средств")
+    user = await session.scalar(select(User).where(User.id == user_id))
+    transaction = BalanceTransaction(
+        user_id=user_id, amount=-amount, balance_after=user.balance,
+        kind=kind, description=description,
+    )
+    session.add(transaction)
+    return user.balance
+
+
+async def credit_balance(session: AsyncSession, user_id: int, amount: float, kind: str, description: str) -> float:
+    if amount <= 0:
+        raise ValueError("Сумма пополнения должна быть положительной")
+    user = await get_or_create_user(session, user_id)
+    user.balance += amount
+    await session.flush()
+    session.add(BalanceTransaction(
+        user_id=user_id, amount=amount, balance_after=user.balance,
+        kind=kind, description=description,
+    ))
+    return user.balance
 
 
 async def get_free_port(session: AsyncSession) -> int:
